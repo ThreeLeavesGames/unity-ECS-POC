@@ -1,39 +1,57 @@
 using Unity.Entities;
 using Unity.Transforms;
-using Unity.Burst;
 using Unity.Mathematics;
+using UnityEngine;
 
-[BurstCompile]
-public partial struct SpawnerSystem : ISystem
+public partial class SpawnerSystem : SystemBase
 {
-    public void OnCreate(ref SystemState state) { }
+    private EndSimulationEntityCommandBufferSystem _ecbSystem;
 
-    public void OnDestroy(ref SystemState state) { }
-
-    [BurstCompile]
-    public void OnUpdate(ref SystemState state)
+    protected override void OnCreate()
     {
-        // Queries for all Spawner components. Uses RefRW because this system wants
-        // to read from and write to the component. If the system only needed read-only
-        // access, it would use RefRO instead.
-        foreach (RefRW<Spwaner_Component> spawner in SystemAPI.Query<RefRW<Spwaner_Component>>())
-        {
-            ProcessSpawner(ref state, spawner);
-        }
+        // Get the EndSimulationEntityCommandBufferSystem to handle structural changes
+        _ecbSystem = World.GetOrCreateSystemManaged<EndSimulationEntityCommandBufferSystem>();
     }
 
-    private void ProcessSpawner(ref SystemState state, RefRW<Spwaner_Component> spawner)
+    protected override void OnUpdate()
     {
-        // If the next spawn time has passed.
-        if (spawner.ValueRO.NextSpawnTime < SystemAPI.Time.ElapsedTime)
-        {
-            // Spawns a new entity and positions it at the spawner.
-            Entity newEntity = state.EntityManager.Instantiate(spawner.ValueRO.Prefab);
-            // LocalPosition.FromPosition returns a Transform initialized with the given position.
-            state.EntityManager.SetComponentData(newEntity, LocalTransform.FromPosition(new float3(spawner.ValueRO.SpawnPosition.x, (half)(spawner.ValueRO.SpawnPosition.y + SystemAPI.Time.ElapsedTime), spawner.ValueRO.SpawnPosition.z)));
+        // Get the EntityCommandBuffer to queue structural changes
+        var ecb = _ecbSystem.CreateCommandBuffer();
 
-            // Resets the next spawn time.
-            spawner.ValueRW.NextSpawnTime = (float)SystemAPI.Time.ElapsedTime + spawner.ValueRO.SpawnRate;
-        }
+        // Capture the delta time for use in the lambda
+        float elapsedTime = (float)SystemAPI.Time.ElapsedTime;
+
+        Entities.ForEach((ref Spwaner_Component spawner) =>
+        {
+            // Calculate the time interval to spawn 4 entities per second (every 0.25 seconds)
+            float spawnInterval = 0.25f;
+
+            // Check if it's time to spawn new entities
+            if (spawner.NextSpawnTime < elapsedTime)
+            {
+                for (int i = 0; i < 4; i++) // Spawn 4 entities
+                {
+                    // Instantiate a new entity using the command buffer
+                    Entity newEntity = ecb.Instantiate(spawner.Prefab);
+
+                    // Set the initial position of the entity using the command buffer
+                    ecb.SetComponent(newEntity, LocalTransform.FromPosition(spawner.SpawnPosition));
+
+                    // Add a movement component to move the entity towards (0,0,-30)
+                    ecb.AddComponent(newEntity, new MoveToTarget_Component
+                    {
+                        TargetPosition = new float3(0, 0, -30),
+                        Speed = 10f // Adjust speed as needed
+                    });
+                }
+
+                // Reset the next spawn time to spawn again after the interval (0.25 seconds)
+                spawner.NextSpawnTime = elapsedTime + spawnInterval;
+            }
+
+        }).Schedule(); // Schedule the job to run asynchronously
+
+        // Ensure that the command buffer system knows about this job
+        _ecbSystem.AddJobHandleForProducer(Dependency);
     }
 }
